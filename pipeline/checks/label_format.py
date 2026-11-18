@@ -23,7 +23,54 @@ Gợi ý
 """
 from ..common import ERROR, WARN, Issue, iou_xywh, parse_yolo_line  # noqa: F401
 
+CHECK = "label_format"
+
 
 def run(ds, cfg):
-    # TODO: duyệt từng file nhãn, từng dòng
-    raise NotImplementedError("check label_format chưa làm")
+    lf = cfg["label_format"]
+    issues = []
+    for lp in ds.label_files():
+        stem = lp.stem
+        size = ds.image_size(stem)              # (W, H) hoặc None
+        kept = []                               # (số dòng, lớp, box) các dòng hợp lệ phía trước
+        for ln, text in ds.read_label_lines(stem) or []:
+            # 1) cú pháp
+            try:
+                c, x, y, w, h = parse_yolo_line(text)
+            except ValueError as e:
+                issues.append(Issue(CHECK, ERROR, "BAD_FORMAT", stem, f"sai định dạng: {e}", ln))
+                continue
+            # 2) BAD_CLASS_ID
+            if not (0 <= c < len(ds.classes)):
+                issues.append(Issue(CHECK, ERROR, "BAD_CLASS_ID", stem, f"id lớp {c} không hợp lệ", ln))
+                continue
+            # 3) BOX_ZERO
+            if w <= 0 or h <= 0:
+                issues.append(Issue(CHECK, ERROR, "BOX_ZERO", stem, "box không có diện tích", ln))
+                continue
+
+            box = (x, y, w, h)
+            # 4) BOX_OUT_OF_IMAGE
+            overflow = max(0.0, -(x - w / 2), (x + w / 2) - 1, -(y - h / 2), (y + h / 2) - 1)
+            if overflow > lf["overflow_tol"]:
+                issues.append(Issue(CHECK, ERROR, "BOX_OUT_OF_IMAGE", stem,
+                                    f"box tràn ảnh {overflow:.4f}", ln, {"overflow": overflow}))
+            # 5) DUP_BOX
+            for prev_ln, prev_c, prev_box in kept:
+                iou = iou_xywh(prev_box, box)
+                if prev_c == c and iou > lf["dup_box_iou"]:
+                    issues.append(Issue(CHECK, ERROR, "DUP_BOX", stem,
+                                        f"trùng box dòng {prev_ln} (IoU {iou:.2f})", ln))
+                    break
+            kept.append((ln, c, box))
+
+            # 6) BOX_TINY, BOX_HUGE
+            if size:
+                short = min(w * size[0], h * size[1])
+                if short < lf["min_box_px"]:
+                    issues.append(Issue(CHECK, WARN, "BOX_TINY", stem,
+                                        f"cạnh ngắn {short:.1f}px < {lf['min_box_px']}px", ln))
+            if w * h > lf["max_box_frac"]:
+                issues.append(Issue(CHECK, WARN, "BOX_HUGE", stem,
+                                    f"box chiếm {w * h:.0%} ảnh", ln))
+    return issues
