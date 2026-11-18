@@ -21,30 +21,24 @@ from ..common import ERROR, WARN  # noqa: F401
 
 def decide(issues, image_stems, cfg, reviewed=frozenset()):
     thr = cfg["gate"]["warn_ratio_hold"]
-    stems = set(image_stems)
-    reviewed = set(reviewed)
-
-    # (1) lỗi bắt buộc: đếm TẤT CẢ, không bỏ qua ảnh đã duyệt, kể cả lỗi data.yaml
+    stems, reviewed = set(image_stems), set(reviewed)
+    # lỗi bắt buộc: đếm TẤT CẢ (kể cả lỗi cấp dataset như data.yaml, kể cả ảnh đã duyệt) — không bao giờ bỏ qua
     n_errors = sum(1 for i in issues if i.severity == ERROR)
-
-    # (2) TODO: tập hợp các ẢNH còn cảnh báo:
-    warn_imgs = {i.image for i in issues
-        if i.severity == WARN and i.image in stems and i.image not in reviewed}
-
-    # (3) tỉ lệ, tránh chia cho 0 khi không có ảnh
+    # ảnh còn cảnh báo: chỉ ảnh thuộc dataset, chưa được người duyệt; đếm theo ẢNH chứ không theo issue
+    warn_imgs = {i.image for i in issues if i.severity == WARN and i.image in stems and i.image not in reviewed}
     n_images = len(stems)
     ratio = round(len(warn_imgs) / n_images, 4) if n_images else 0
 
-    # (4) quyết định
-    if n_errors > 0:
+    if n_errors:
         decision = "Rework"
-        reasons = [f"còn {n_errors} lỗi bắt buộc: phải sửa trước khi phát hành"]
+        reasons = [f"còn {n_errors} lỗi bắt buộc (severity error): phải sửa trước khi phát hành"]
     elif ratio >= thr:
         decision = "Hold"
-        reasons = [f"{len(warn_imgs)}/{n_images} ảnh ({ratio:.1%}) còn cảnh báo chưa duyệt >= ngưỡng {thr:.0%}"]
+        reasons = [f"{len(warn_imgs)}/{n_images} ảnh ({ratio:.1%}) còn cảnh báo chưa người duyệt >= ngưỡng {thr:.0%}"]
     else:
         decision = "Release"
-        reasons = [f"0 lỗi bắt buộc; {len(warn_imgs)}/{n_images} ảnh ({ratio:.1%}) còn cảnh báo < ngưỡng {thr:.0%}"]
-
+        reasons = [f"0 lỗi bắt buộc; {len(warn_imgs)}/{n_images} ảnh ({ratio:.1%}) còn cảnh báo chưa duyệt < ngưỡng {thr:.0%}"]
+    if decision == "Rework" and warn_imgs:
+        reasons.append(f"ngoài ra {len(warn_imgs)}/{n_images} ảnh ({ratio:.1%}) còn cảnh báo chưa duyệt")
     return dict(decision=decision, n_errors=n_errors, n_warn_images=len(warn_imgs),
                 n_images=n_images, warn_ratio=ratio, reasons=reasons)
